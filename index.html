@@ -257,6 +257,29 @@
   .phase-progress-row .ppr-bar-wrap { height: 6px; background: var(--stone); }
   .phase-progress-row .ppr-bar { height: 100%; background: var(--brand-solid); }
 
+  /* ---- Login (magic link) + sincronización ---- */
+  .login-screen { position: fixed; inset: 0; z-index: 50; background: var(--stone); display: none; align-items: center; justify-content: center; padding: 24px 16px; overflow-y: auto; }
+  .login-screen.open { display: flex; }
+  .login-box { width: 100%; max-width: 380px; background: var(--card); border: 1px solid var(--line); border-top: 5px solid var(--band); padding: 26px 22px 22px; }
+  .login-box .login-eyebrow { font-size: 12.5px; color: var(--ink-soft); margin: 0 0 2px; }
+  .login-box h2 { font-family: 'Oswald', sans-serif; font-size: 25px; font-weight: 600; margin: 0 0 8px; letter-spacing: .2px; }
+  .login-box .login-sub { margin: 0 0 18px; font-size: 13.5px; color: var(--ink-soft); line-height: 1.5; }
+  .login-box input[type="email"] { width: 100%; font-family: inherit; font-size: 15px; padding: 11px 12px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  .login-send { width: 100%; margin-top: 10px; background: var(--brand-solid); color: #fff; border: none; padding: 12px; font-family: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .login-send[disabled] { opacity: .55; cursor: default; }
+  .login-msg { margin-top: 12px; font-size: 12.5px; line-height: 1.5; color: var(--ink-soft); min-height: 18px; }
+  .login-msg.ok { color: var(--turf-green); }
+  .login-msg.error { color: var(--miss-red); }
+  .login-skip { display: block; width: 100%; margin-top: 14px; background: none; border: none; color: var(--ink-soft); font-family: inherit; font-size: 12.5px; text-decoration: underline; cursor: pointer; padding: 6px; }
+  .sync-line { font-size: 12.5px; color: var(--ink-soft); margin: 0 0 4px; line-height: 1.5; }
+  .sync-line.sync-account { color: var(--ink); font-weight: 600; }
+  .sync-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--rest-grey); margin-right: 6px; vertical-align: middle; }
+  .sync-dot.ok { background: var(--turf-green); }
+  .sync-dot.pending { background: var(--marker-yellow); }
+  .sync-dot.error { background: var(--miss-red); }
+  .sync-actions { display: flex; gap: 8px; margin-top: 10px; }
+  .sync-actions button { flex: 1; font-family: inherit; font-size: 12.5px; font-weight: 600; padding: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; }
+
   /* ---- Collapsible phase header ---- */
   .phase-divider { padding: 26px 4px 10px; border-top: 3px solid var(--track-red); margin-top: 6px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .phase-divider-main { flex: 1; }
@@ -322,6 +345,17 @@
         <div class="settings-row">
           <label>Días de carrera / running (3 sugeridos — el resto los cubrís con fútbol y fuerza)</label>
           <div class="day-toggles" id="dayToggles"></div>
+        </div>
+        <div class="settings-row" id="syncRow" style="display:none;">
+          <label>Guardado en la nube</label>
+          <div class="backup-card" style="margin:0; padding:12px;">
+            <div class="sync-line sync-account" id="syncAccount">Modo local</div>
+            <div class="sync-line" id="syncStatus"><span class="sync-dot"></span>Sin sincronizar</div>
+            <div class="sync-actions">
+              <button id="syncLoginBtn" style="display:none;">Iniciar sesión</button>
+              <button id="syncLogoutBtn" style="display:none;">Cerrar sesión</button>
+            </div>
+          </div>
         </div>
         <div class="settings-row">
           <label>Copia de seguridad</label>
@@ -414,6 +448,23 @@
     <button class="modal-close" id="modalClose">Cerrar</button>
   </div>
 </div>
+
+<div class="login-screen" id="loginScreen">
+  <div class="login-box">
+    <p class="login-eyebrow">Media maratón — Buenos Aires 2027</p>
+    <h2>Rumbo a los 21K</h2>
+    <p class="login-sub">Entrá con tu email y el plan queda guardado en la nube: lo vas a tener igual en el celular y en la compu. Te mandamos un enlace de acceso, no hace falta contraseña.</p>
+    <input type="email" id="loginEmail" placeholder="tu@email.com" inputmode="email" autocomplete="email" autocapitalize="off" spellcheck="false">
+    <button class="login-send" id="loginSendBtn">Enviarme el enlace</button>
+    <div class="login-msg" id="loginMsg"></div>
+    <button class="login-skip" id="loginSkipBtn">Seguir sin cuenta (solo en este dispositivo)</button>
+  </div>
+</div>
+
+<!-- Cliente de Supabase (CDN) + tus credenciales. Si alguno de los dos no
+     carga, la app sigue funcionando en modo local con localStorage. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
 
 <script>
 (function () {
@@ -528,31 +579,66 @@
   }
   migrateFromV1();
 
-  function loadConfig() {
+  // Marca de tiempo del último cambio local. Es la que comparamos contra la
+  // columna updated_at de Supabase para decidir quién tiene los datos más
+  // nuevos. Se lee UNA vez, antes de que la app escriba nada, para que el
+  // valor refleje la última edición real del usuario en este dispositivo.
+  var UPDATED_KEY = "hm_tracker_updated_at_v1";
+  var bootLocalUpdatedAt = (function () {
+    try { return localStorage.getItem(UPDATED_KEY); } catch (e) { return null; }
+  })();
+
+  // true mientras estamos bajando datos de la nube: durante ese rato los
+  // saveX() escriben en localStorage pero NO cuentan como cambio del usuario
+  // (si no, rebotaríamos lo que acabamos de bajar).
+  var applyingRemote = false;
+
+  // Se llama en cada escritura local real. Deja constancia de la hora del
+  // cambio y programa la subida a Supabase (con debounce). Nunca tira error:
+  // si no hay nube configurada, schedulePush() no hace nada.
+  function markLocalChange() {
+    if (applyingRemote) return;
+    try { localStorage.setItem(UPDATED_KEY, new Date().toISOString()); } catch (e) {}
+    schedulePush();
+  }
+
+  function normalizeConfig(parsed) {
     var def = { startDate: null, trainingDays: [0,3,5] };
+    if (!parsed || typeof parsed !== "object") return def;
+    if (!parsed.startDate) parsed.startDate = def.startDate;
+    if (!Array.isArray(parsed.trainingDays)) parsed.trainingDays = def.trainingDays;
+    return parsed;
+  }
+  function loadConfig() {
     try {
       var raw = localStorage.getItem(CONFIG_KEY);
-      if (!raw) return def;
-      var parsed = JSON.parse(raw);
-      if (!parsed.startDate) parsed.startDate = def.startDate;
-      if (!Array.isArray(parsed.trainingDays)) parsed.trainingDays = def.trainingDays;
-      return parsed;
-    } catch (e) { return def; }
+      if (!raw) return normalizeConfig(null);
+      return normalizeConfig(JSON.parse(raw));
+    } catch (e) { return normalizeConfig(null); }
   }
-  function saveConfig(cfg) { try { localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg)); } catch (e) {} }
+  function saveConfig(cfg) {
+    try { localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg)); } catch (e) {}
+    markLocalChange();
+  }
   function loadLog() {
     try { var raw = localStorage.getItem(LOG_KEY); return raw ? JSON.parse(raw) : {}; } catch (e) { return {}; }
   }
-  function saveLog(log) { try { localStorage.setItem(LOG_KEY, JSON.stringify(log)); } catch (e) {} }
+  function saveLog(log) {
+    try { localStorage.setItem(LOG_KEY, JSON.stringify(log)); } catch (e) {}
+    markLocalChange();
+  }
 
   var WEIGHT_KEY = "hm_tracker_weight_v1";
   function loadWeights() {
     try { var raw = localStorage.getItem(WEIGHT_KEY); return raw ? JSON.parse(raw) : []; } catch (e) { return []; }
   }
-  function saveWeights(list) { try { localStorage.setItem(WEIGHT_KEY, JSON.stringify(list)); } catch (e) {} }
+  function saveWeights(list) {
+    try { localStorage.setItem(WEIGHT_KEY, JSON.stringify(list)); } catch (e) {}
+    markLocalChange();
+  }
 
-  var config = loadConfig();
-  if (!config.startDate) {
+  function ensureStartDate() {
+    if (config.startDate) return;
     var t = new Date();
     var day = t.getDay();
     var diff = (day === 1) ? 0 : ((8 - day) % 7 || 7);
@@ -561,6 +647,9 @@
     config.startDate = fmtKey(monday);
     saveConfig(config);
   }
+
+  var config = loadConfig();
+  ensureStartDate();
   var log = loadLog();
   var currentModalKey = null;
 
@@ -673,15 +762,11 @@
         var data = JSON.parse(reader.result);
         if (!data || (!data.config && !data.log && !data.weights)) throw new Error("formato inválido");
         if (!confirm("Esto reemplaza todo lo que tenés cargado ahora en este dispositivo por el contenido del backup. ¿Continuar?")) return;
-        if (data.config) { config = data.config; saveConfig(config); }
+        if (data.config) { config = normalizeConfig(data.config); saveConfig(config); }
         if (data.log) { log = data.log; saveLog(log); }
         if (data.weights) { weights = data.weights; saveWeights(weights); }
-        startDateInput.value = config.startDate;
-        document.querySelectorAll(".day-toggle").forEach(function (btn, idx) {
-          btn.classList.toggle("active", config.trainingDays.indexOf(idx) > -1);
-        });
-        render();
-        renderWeight();
+        ensureStartDate();
+        refreshUIFromState();
         alert("Backup restaurado.");
       } catch (err) {
         alert("No se pudo leer ese archivo como backup válido.");
@@ -1137,10 +1222,369 @@
     });
   }
 
-  render();
-  renderWeight();
-  document.getElementById("backupStatus").textContent = fmtBackupStatus();
+  // Repinta toda la UI a partir del estado en memoria (config / log / weights).
+  // Se usa al arrancar, al restaurar un backup y al bajar datos de la nube.
+  function refreshUIFromState() {
+    startDateInput.value = config.startDate;
+    document.querySelectorAll(".day-toggle").forEach(function (btn, idx) {
+      btn.classList.toggle("active", config.trainingDays.indexOf(idx) > -1);
+    });
+    render();
+    renderWeight();
+    document.getElementById("backupStatus").textContent = fmtBackupStatus();
+  }
+
+  /* =====================================================================
+     CAPA DE SINCRONIZACIÓN CON SUPABASE
+     ---------------------------------------------------------------------
+     Reglas de esta capa (en orden de importancia):
+
+     1) localStorage sigue siendo la fuente de verdad mientras usás la app.
+        Todo cambio se guarda primero local, igual que antes.
+     2) Supabase es una copia remota. Se escribe con debounce (1,5 s) para
+        no spamear y SIEMPRE dentro de try/catch: si la red falla, la app
+        no se entera y el usuario nunca queda bloqueado.
+     3) Si no hay credenciales en config.js, si no cargó la librería o si
+        el usuario elige "seguir sin cuenta", la app funciona exactamente
+        como la versión original (modo local).
+
+     Cómo se decide quién gana al arrancar:
+       - Supabase no tiene fila todavía  -> subimos lo local (primer sync).
+       - Supabase tiene fila más nueva   -> bajamos y pisamos localStorage.
+       - localStorage es más nuevo       -> subimos lo local.
+     La comparación es entre la columna updated_at de la fila remota y la
+     marca local hm_tracker_updated_at_v1 (leída antes de que la app
+     escribiera nada en este arranque).
+  ===================================================================== */
+
+  var SYNC_TABLE = "tracker_data";
+  var SYNC_DEBOUNCE_MS = 1500;                    // espera antes de escribir
+  var SYNC_RETRY_MS = [5000, 15000, 30000, 60000]; // backoff ante fallos
+  var LOCAL_ONLY_KEY = "hm_tracker_local_only_v1"; // el usuario eligió no loguearse
+
+  var sb = null;                  // cliente de Supabase (null = modo local)
+  var sbUser = null;              // usuario logueado
+  var activeUserId = null;
+  var initialSyncDone = false;    // ya sabemos qué hay en la nube
+  var initialSyncFailed = false;  // la primera lectura falló, hay que reintentar
+  var pendingPush = false;        // hay cambios locales sin subir
+  var pushing = false;            // hay un upsert en vuelo
+  var pushTimer = null;
+  var retryIndex = 0;
+
+  var loginScreen = document.getElementById("loginScreen");
+  var loginEmailInput = document.getElementById("loginEmail");
+  var loginSendBtn = document.getElementById("loginSendBtn");
+  var loginMsg = document.getElementById("loginMsg");
+
+  function showLogin() { loginScreen.classList.add("open"); }
+  function hideLogin() { loginScreen.classList.remove("open"); }
+
+  function setLoginMsg(text, kind) {
+    loginMsg.className = "login-msg" + (kind ? " " + kind : "");
+    loginMsg.textContent = text;
+  }
+
+  // Estado visible de la sincronización, dentro de "Ajustes del plan".
+  function setSyncStatus(kind, text) {
+    var el = document.getElementById("syncStatus");
+    if (!el) return;
+    el.innerHTML = '<span class="sync-dot ' + (kind || "") + '"></span>';
+    el.appendChild(document.createTextNode(text));
+  }
+  function updateSyncUI() {
+    var row = document.getElementById("syncRow");
+    if (!row) return;
+    row.style.display = sb ? "block" : "none"; // sin nube configurada: ni se muestra
+    document.getElementById("syncAccount").textContent =
+      sbUser ? (sbUser.email || "Sesión iniciada") : "Modo local (solo este dispositivo)";
+    document.getElementById("syncLoginBtn").style.display = sbUser ? "none" : "block";
+    document.getElementById("syncLogoutBtn").style.display = sbUser ? "block" : "none";
+  }
+
+  // Saca el #access_token=... que deja el magic link en la URL, para que no
+  // quede colgado en la barra de direcciones.
+  function cleanAuthHash() {
+    try {
+      if (window.location.hash && window.location.hash.indexOf("access_token") > -1) {
+        history.replaceState(null, "", window.location.pathname + window.location.search);
+      }
+    } catch (e) {}
+  }
+
+  // --- Escritura en la nube -------------------------------------------------
+
+  // Debounce: cada cambio local reprograma la subida 1,5 s más adelante.
+  function schedulePush() {
+    pendingPush = true;
+    if (!sb || !sbUser) return;  // sin sesión no hay nada que subir (queda pendiente)
+    if (pushTimer) clearTimeout(pushTimer);
+    pushTimer = setTimeout(function () { pushTimer = null; pushNow(); }, SYNC_DEBOUNCE_MS);
+  }
+
+  function pushNow() {
+    if (!sb || !sbUser || !pendingPush) return;
+    if (!initialSyncDone || pushing) return;  // todavía no sabemos qué hay en la nube
+    pushing = true;
+    pendingPush = false;
+    var stamp;
+    try { stamp = localStorage.getItem(UPDATED_KEY); } catch (e) { stamp = null; }
+    if (!stamp) stamp = new Date().toISOString();
+    var row = {
+      user_id: sbUser.id,
+      config: config,
+      log: log,
+      weights: weights,
+      updated_at: stamp
+    };
+    setSyncStatus("pending", "Guardando en la nube…");
+    try {
+      sb.from(SYNC_TABLE).upsert(row, { onConflict: "user_id" }).then(function (res) {
+        pushing = false;
+        if (res.error) { onPushError(res.error); return; }
+        retryIndex = 0;
+        if (pendingPush) { schedulePush(); }   // hubo más cambios mientras subíamos
+        else { setSyncStatus("ok", "Guardado en la nube."); }
+      }, onPushError);
+    } catch (e) {
+      pushing = false;
+      onPushError(e);
+    }
+  }
+
+  // Un fallo al subir nunca interrumpe nada: el dato ya está en localStorage,
+  // solo dejamos el cambio marcado como pendiente y reintentamos.
+  function onPushError(err) {
+    pushing = false;
+    pendingPush = true;
+    if (window.console) console.warn("[sync] no se pudo guardar en Supabase:", err && (err.message || err));
+    setSyncStatus("error", "Sin conexión con la nube. Tus datos están guardados en este dispositivo y se reintenta solo.");
+    scheduleRetry();
+  }
+
+  function scheduleRetry() {
+    if (!sb || !sbUser) return;
+    var delay = SYNC_RETRY_MS[Math.min(retryIndex, SYNC_RETRY_MS.length - 1)];
+    retryIndex++;
+    if (pushTimer) clearTimeout(pushTimer);
+    pushTimer = setTimeout(function () {
+      pushTimer = null;
+      retryNow();
+    }, delay);
+  }
+
+  function retryNow() {
+    if (!sb || !sbUser) return;
+    if (initialSyncFailed) { initialSync(); return; }  // ni siquiera pudimos leer
+    if (pendingPush) pushNow();
+  }
+
+  // --- Lectura inicial ------------------------------------------------------
+
+  function applyRemoteState(row) {
+    applyingRemote = true;
+    try {
+      config = normalizeConfig(row.config);
+      saveConfig(config);
+      log = (row.log && typeof row.log === "object") ? row.log : {};
+      saveLog(log);
+      weights = Array.isArray(row.weights) ? row.weights : [];
+      saveWeights(weights);
+      try { localStorage.setItem(UPDATED_KEY, row.updated_at || new Date().toISOString()); } catch (e) {}
+    } catch (e) {
+      if (window.console) console.warn("[sync] datos remotos ilegibles:", e && e.message);
+    }
+    applyingRemote = false;
+    ensureStartDate();     // si la fila remota no traía fecha de inicio
+    refreshUIFromState();
+  }
+
+  function initialSync() {
+    if (!sb || !sbUser) return;
+    setSyncStatus("pending", "Sincronizando…");
+    try {
+      sb.from(SYNC_TABLE)
+        .select("config, log, weights, updated_at")
+        .eq("user_id", sbUser.id)
+        .maybeSingle()
+        .then(function (res) {
+          if (res.error) { onInitialSyncError(res.error); return; }
+          initialSyncDone = true;
+          initialSyncFailed = false;
+          retryIndex = 0;
+          var row = res.data;
+
+          if (!row) {
+            // Primera vez con esta cuenta: subimos lo que haya en el dispositivo.
+            pendingPush = true;
+            pushNow();
+            return;
+          }
+
+          var remoteAt = Date.parse(row.updated_at || "") || 0;
+          var localAt = Date.parse(bootLocalUpdatedAt || "") || 0;
+
+          if (remoteAt > localAt) {
+            // La nube tiene lo más nuevo: pisa localStorage.
+            applyRemoteState(row);
+            pendingPush = false;
+            setSyncStatus("ok", "Datos actualizados desde la nube.");
+          } else {
+            // Este dispositivo tiene lo más nuevo (o no hay con qué comparar).
+            pendingPush = true;
+            pushNow();
+          }
+        }, onInitialSyncError);
+    } catch (e) {
+      onInitialSyncError(e);
+    }
+  }
+
+  function onInitialSyncError(err) {
+    if (window.console) console.warn("[sync] no se pudo leer de Supabase:", err && (err.message || err));
+    // La app sigue andando con localStorage; reintentamos en segundo plano.
+    initialSyncDone = false;
+    initialSyncFailed = true;
+    setSyncStatus("error", "No se pudo leer la nube. Seguís trabajando con los datos de este dispositivo.");
+    scheduleRetry();
+  }
+
+  // --- Sesión ---------------------------------------------------------------
+
+  function handleSession(session) {
+    var user = session ? session.user : null;
+    if (user && activeUserId === user.id) return;  // ya estamos sincronizados
+    activeUserId = user ? user.id : null;
+    sbUser = user;
+
+    if (!user) {
+      initialSyncDone = false;
+      updateSyncUI();
+      setSyncStatus("", "Sin sesión: los datos quedan solo en este dispositivo.");
+      var localOnly = null;
+      try { localOnly = localStorage.getItem(LOCAL_ONLY_KEY); } catch (e) {}
+      if (!localOnly) showLogin();
+      return;
+    }
+
+    try { localStorage.removeItem(LOCAL_ONLY_KEY); } catch (e) {}
+    hideLogin();
+    cleanAuthHash();
+    updateSyncUI();
+    initialSync();
+  }
+
+  function sendMagicLink() {
+    var email = (loginEmailInput.value || "").trim();
+    if (email.indexOf("@") < 1) { setLoginMsg("Escribí un email válido.", "error"); return; }
+    if (!sb) { setLoginMsg("La sincronización no está configurada. Podés seguir sin cuenta.", "error"); return; }
+    loginSendBtn.disabled = true;
+    setLoginMsg("Enviando el enlace…", "");
+    try {
+      sb.auth.signInWithOtp({
+        email: email,
+        options: { emailRedirectTo: window.location.href.split("#")[0] }
+      }).then(function (res) {
+        loginSendBtn.disabled = false;
+        if (res.error) { onMagicLinkError(res.error); return; }
+        setLoginMsg("Listo: te mandamos un enlace a " + email + ". Abrilo en este mismo dispositivo para entrar.", "ok");
+      }, onMagicLinkError);
+    } catch (e) {
+      onMagicLinkError(e);
+    }
+  }
+  function onMagicLinkError(err) {
+    loginSendBtn.disabled = false;
+    if (window.console) console.warn("[auth] fallo el envío del magic link:", err && (err.message || err));
+    setLoginMsg("No se pudo enviar el enlace (" + ((err && err.message) || "error de red") + "). Probá de nuevo o seguí sin cuenta.", "error");
+  }
+
+  loginSendBtn.addEventListener("click", sendMagicLink);
+  loginEmailInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") sendMagicLink();
+  });
+  document.getElementById("loginSkipBtn").addEventListener("click", function () {
+    try { localStorage.setItem(LOCAL_ONLY_KEY, "1"); } catch (e) {}
+    hideLogin();
+    setSyncStatus("", "Sin sesión: los datos quedan solo en este dispositivo.");
+  });
+  document.getElementById("syncLoginBtn").addEventListener("click", function () {
+    setLoginMsg("", "");
+    showLogin();
+  });
+  document.getElementById("syncLogoutBtn").addEventListener("click", function () {
+    if (!sb) return;
+    if (!confirm("¿Cerrar sesión? Tus datos quedan igual en la nube y en este dispositivo.")) return;
+    try {
+      sb.auth.signOut().then(function () { location.reload(); }, function () { location.reload(); });
+    } catch (e) { location.reload(); }
+  });
+
+  // --- Arranque de la nube --------------------------------------------------
+
+  function cloudInit() {
+    var cfg = window.SUPABASE_CONFIG || {};
+    if (!cfg.url || !cfg.anonKey) {
+      // Sin credenciales: modo local puro, idéntico a la versión original.
+      updateSyncUI();
+      return;
+    }
+    if (!window.supabase || !window.supabase.createClient) {
+      // La librería del CDN no cargó (offline, bloqueada, etc.).
+      if (window.console) console.warn("[sync] no cargó supabase-js; la app sigue en modo local.");
+      updateSyncUI();
+      return;
+    }
+    try {
+      sb = window.supabase.createClient(cfg.url, cfg.anonKey, {
+        auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+      });
+    } catch (e) {
+      sb = null;
+      if (window.console) console.warn("[sync] no se pudo crear el cliente de Supabase:", e && e.message);
+      updateSyncUI();
+      return;
+    }
+
+    updateSyncUI();
+
+    // Cambios de sesión (login por magic link, logout, refresh de token).
+    try {
+      sb.auth.onAuthStateChange(function (event, session) { handleSession(session); });
+    } catch (e) {
+      if (window.console) console.warn("[sync] onAuthStateChange no disponible:", e && e.message);
+    }
+
+    // Sesión guardada de antes (o la que viene en el hash del magic link).
+    try {
+      sb.auth.getSession().then(function (res) {
+        handleSession(res && res.data ? res.data.session : null);
+      }, function (err) {
+        if (window.console) console.warn("[sync] getSession falló:", err && err.message);
+        handleSession(null);
+      });
+    } catch (e) {
+      handleSession(null);
+    }
+
+    // Volvió la conexión: reintentamos enseguida lo que haya quedado colgado.
+    window.addEventListener("online", function () {
+      retryIndex = 0;
+      retryNow();
+    });
+
+    // Al cerrar / mandar la app al fondo, subimos sin esperar el debounce.
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "hidden" && pendingPush) {
+        if (pushTimer) { clearTimeout(pushTimer); pushTimer = null; }
+        pushNow();
+      }
+    });
+  }
+
+  refreshUIFromState();
   checkBackupReminder();
+  cloudInit();
 })();
 </script>
 </body>
