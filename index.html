@@ -148,9 +148,29 @@
   .settings-row { margin: 12px 0; }
   .settings-row label { display: block; font-size: 12.5px; color: var(--ink-soft); margin-bottom: 6px; }
   .settings-row input[type="date"] { font-family: inherit; font-size: 14px; padding: 8px 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); width: 100%; }
-  .day-toggles { display: flex; gap: 6px; flex-wrap: wrap; }
-  .day-toggle { width: 40px; height: 40px; border: 1px solid var(--line); background: var(--card); color: var(--ink-soft); font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; }
-  .day-toggle.active { background: var(--brand-solid); border-color: var(--brand-solid); color: #fff; }
+  .day-types { display: grid; gap: 5px; }
+  .day-type-row { display: flex; align-items: center; gap: 8px; }
+  .dt-day { flex: none; width: 34px; font-size: 12px; font-weight: 600; color: var(--ink-soft); text-transform: capitalize; }
+  .dt-opts { flex: 1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; min-width: 0; }
+  .dt-opt { min-width: 0; padding: 7px 2px; border: 1px solid var(--line); background: var(--card); color: var(--ink-soft); font-family: inherit; font-size: 10.5px; font-weight: 600; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dt-opt.running.active { background: var(--turf-green-bg); border-color: var(--turf-green); color: var(--turf-green); }
+  .dt-opt.soccer.active { background: var(--soccer-bg); border-color: var(--soccer); color: var(--soccer); }
+  .dt-opt.strength.active { background: var(--strength-bg); border-color: var(--strength); color: var(--strength); }
+  .dt-opt.rest.active { background: var(--rest-grey-bg); border-color: var(--rest-grey); color: var(--rest-grey); }
+  /* En celular el nombre del día pasa arriba y los 4 botones se reparten todo
+     el ancho. Lado a lado entran justo ("Descanso" queda a menos de 1px del
+     borde), y ahí cualquier diferencia de fuente lo cortaría con puntos
+     suspensivos; apilado sobra lugar en cualquier teléfono. */
+  @media (max-width: 420px) {
+    .day-type-row { flex-direction: column; align-items: stretch; gap: 3px; }
+    .day-types { gap: 9px; }
+    .dt-day { width: auto; font-size: 11px; }
+    .dt-opt { font-size: 10px; }
+  }
+  @media (max-width: 340px) {
+    .dt-opts { gap: 3px; }
+    .dt-opt { font-size: 9.5px; padding: 7px 1px; }
+  }
   .reset-btn { margin-top: 6px; font-size: 12.5px; color: var(--track-red); background: none; border: none; text-decoration: underline; cursor: pointer; padding: 0; }
 
   /* ---- Phase dividers ---- */
@@ -194,6 +214,9 @@
   .modal { background: var(--card); width: 100%; max-width: 560px; padding: 20px 20px 26px; border-top: 3px solid var(--track-red); }
   .modal h2 { font-family: 'Oswald', sans-serif; font-size: 18px; margin: 0 0 4px; text-transform: capitalize; }
   .modal .modal-workout { font-size: 13px; color: var(--ink-soft); margin: 0 0 16px; line-height: 1.4; }
+  .modal .modal-workout.dt-text-soccer { color: var(--soccer); }
+  .modal .modal-workout.dt-text-strength { color: var(--strength); }
+  .modal .modal-workout.dt-text-rest { color: var(--rest-grey); }
   .modal-options { display: grid; gap: 8px; }
   .modal-btn { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1.5px solid var(--line); background: transparent; color: var(--ink); font-family: inherit; font-size: 14px; font-weight: 500; cursor: pointer; text-align: left; }
   .modal-btn .dot { width: 12px; height: 12px; }
@@ -217,9 +240,10 @@
 
   /* ---- Backup ---- */
   .backup-banner {
-    display: none; align-items: center; justify-content: space-between; gap: 10px;
+    display: none; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
     background: var(--brand-solid); color: #fff; padding: 10px 12px; font-size: 12.5px; margin-bottom: 14px;
   }
+  #backupBannerText { flex: 1 1 150px; min-width: 0; }
   .backup-banner button { flex: none; font-size: 12px; font-weight: 600; border: none; padding: 7px 10px; cursor: pointer; }
   .backup-banner .bb-do { background: #fff; color: var(--brand-solid); }
   .backup-banner .bb-dismiss { background: transparent; color: #fff; text-decoration: underline; }
@@ -343,8 +367,8 @@
           <input type="date" id="startDateInput">
         </div>
         <div class="settings-row">
-          <label>Días de carrera / running (3 sugeridos — el resto los cubrís con fútbol y fuerza)</label>
-          <div class="day-toggles" id="dayToggles"></div>
+          <label>Tipo de cada día de la semana (los días de running son los que llevan el plan)</label>
+          <div class="day-types" id="dayTypes"></div>
         </div>
         <div class="settings-row" id="syncRow" style="display:none;">
           <label>Guardado en la nube</label>
@@ -548,14 +572,16 @@
   var ROLE_MODAL_LABEL = { long: "Día largo", tempo: "Día de ritmo", easy: "Día suave" };
   var ROLE_ORDER = ["long", "tempo", "easy"];
 
-  var OFF_DAY_LABELS = {
-    1: "Fútbol 21:00 — tu día aeróbico-explosivo.",
-    2: "Día de fuerza (full body).",
-    4: "Día de fuerza (full body).",
-    6: "Descanso — llegás fresco/a al domingo."
+  // Tipos posibles para cada día de la semana. El usuario elige uno por día en
+  // Ajustes; los días 'running' son los que llevan el plan de la semana y los
+  // que se reparten los roles largo / ritmo / suave.
+  var DAY_TYPES = ["running", "soccer", "strength", "rest"];
+  var DAY_TYPE_LABEL = { running: "Running", soccer: "Fútbol", strength: "Fuerza", rest: "Descanso" };
+  var DAY_TYPE_MODAL_TEXT = {
+    soccer: "Fútbol — tu día aeróbico-explosivo.",
+    strength: "Día de fuerza (full body).",
+    rest: "Descanso — llegás fresco/a al próximo entrenamiento."
   };
-
-  var DAY_LETTERS = ["D", "L", "M", "M", "J", "V", "S"];
   var WEEKDAY_SHORT = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
   var WEEKDAY_FULL = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
   var MONTHS = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
@@ -602,11 +628,52 @@
     schedulePush();
   }
 
+  // Devuelve un dayTypes valido (los 7 dias con un tipo conocido) o null si la
+  // config guardada todavia no lo tiene.
+  function normalizeDayTypes(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    var out = {}, alguno = false;
+    for (var d = 0; d < 7; d++) {
+      var t = raw[d] != null ? raw[d] : raw[String(d)];
+      if (DAY_TYPES.indexOf(t) > -1) { out[d] = t; alguno = true; }
+      else { out[d] = "rest"; }   // un dia sin tipo nunca queda vacio: cae en descanso
+    }
+    return alguno ? out : null;
+  }
+
+  // Migracion de la config vieja: la app solo guardaba trainingDays. Los dias
+  // que estaban ahi pasan a 'running' y el resto toma el reparto que antes
+  // estaba hardcodeado (lunes futbol, martes y jueves fuerza, el resto descanso).
+  function dayTypesFromTrainingDays(trainingDays) {
+    var td = Array.isArray(trainingDays) ? trainingDays : [];
+    var out = {};
+    for (var d = 0; d < 7; d++) {
+      if (td.indexOf(d) > -1) out[d] = "running";
+      else if (d === 1) out[d] = "soccer";
+      else if (d === 2 || d === 4) out[d] = "strength";
+      else out[d] = "rest";
+    }
+    return out;
+  }
+
+  // trainingDays se deriva de dayTypes, nunca al reves.
+  function trainingDaysFrom(dayTypes) {
+    var out = [];
+    for (var d = 0; d < 7; d++) { if (dayTypes[d] === "running") out.push(d); }
+    return out;
+  }
+
+  function dayTypeFor(weekday) {
+    return (config.dayTypes && config.dayTypes[weekday]) || "rest";
+  }
+
   function normalizeConfig(parsed) {
     var def = { startDate: null, trainingDays: [0,3,5] };
-    if (!parsed || typeof parsed !== "object") return def;
+    if (!parsed || typeof parsed !== "object") parsed = {};
     if (!parsed.startDate) parsed.startDate = def.startDate;
-    if (!Array.isArray(parsed.trainingDays)) parsed.trainingDays = def.trainingDays;
+    if (!Array.isArray(parsed.trainingDays)) parsed.trainingDays = def.trainingDays.slice();
+    parsed.dayTypes = normalizeDayTypes(parsed.dayTypes);
+    if (parsed.dayTypes) parsed.trainingDays = trainingDaysFrom(parsed.dayTypes);
     return parsed;
   }
   function loadConfig() {
@@ -648,8 +715,18 @@
     saveConfig(config);
   }
 
+  // Si la config viene de la version vieja (solo trainingDays), arma dayTypes
+  // una sola vez y lo guarda. No toca logs ni pesos.
+  function ensureDayTypes() {
+    if (config.dayTypes) { config.trainingDays = trainingDaysFrom(config.dayTypes); return; }
+    config.dayTypes = dayTypesFromTrainingDays(config.trainingDays);
+    config.trainingDays = trainingDaysFrom(config.dayTypes);
+    saveConfig(config);
+  }
+
   var config = loadConfig();
   ensureStartDate();
+  ensureDayTypes();
   var log = loadLog();
   var currentModalKey = null;
 
@@ -679,21 +756,46 @@
     if (this.value) { config.startDate = this.value; saveConfig(config); render(); }
   });
 
-  var dayTogglesEl = document.getElementById("dayToggles");
-  DAY_LETTERS.forEach(function (letter, idx) {
-    var btn = document.createElement("button");
-    btn.className = "day-toggle" + (config.trainingDays.indexOf(idx) > -1 ? " active" : "");
-    btn.textContent = letter;
-    btn.setAttribute("aria-label", WEEKDAY_SHORT[idx]);
-    btn.addEventListener("click", function () {
-      var pos = config.trainingDays.indexOf(idx);
-      if (pos > -1) { config.trainingDays.splice(pos, 1); } else { config.trainingDays.push(idx); }
-      saveConfig(config);
-      btn.classList.toggle("active");
-      render();
+  var dayTypesEl = document.getElementById("dayTypes");
+
+  function renderDayTypes() {
+    dayTypesEl.innerHTML = "";
+    for (var d = 0; d < 7; d++) buildDayTypeRow(d);
+  }
+
+  function buildDayTypeRow(weekday) {
+    var row = document.createElement("div");
+    row.className = "day-type-row";
+    var name = document.createElement("span");
+    name.className = "dt-day";
+    name.textContent = WEEKDAY_SHORT[weekday];
+    row.appendChild(name);
+    var opts = document.createElement("div");
+    opts.className = "dt-opts";
+    DAY_TYPES.forEach(function (type) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "dt-opt " + type + (dayTypeFor(weekday) === type ? " active" : "");
+      btn.textContent = DAY_TYPE_LABEL[type];
+      btn.setAttribute("aria-label", WEEKDAY_FULL[weekday] + ": " + DAY_TYPE_LABEL[type]);
+      btn.addEventListener("click", function () { setDayType(weekday, type); });
+      opts.appendChild(btn);
     });
-    dayTogglesEl.appendChild(btn);
-  });
+    row.appendChild(opts);
+    dayTypesEl.appendChild(row);
+  }
+
+  function setDayType(weekday, type) {
+    if (DAY_TYPES.indexOf(type) < 0) type = "rest";
+    if (!config.dayTypes) config.dayTypes = dayTypesFromTrainingDays(config.trainingDays);
+    config.dayTypes[weekday] = type;
+    config.trainingDays = trainingDaysFrom(config.dayTypes);
+    saveConfig(config);
+    renderDayTypes();
+    render();
+  }
+
+  renderDayTypes();
 
   document.getElementById("resetBtn").addEventListener("click", function () {
     if (confirm("¿Borrar todo el progreso registrado? Esta acción no se puede deshacer.")) {
@@ -748,7 +850,10 @@
   }
   document.getElementById("backupDownloadBtn").addEventListener("click", doBackup);
   document.getElementById("backupBannerDo").addEventListener("click", doBackup);
-  document.getElementById("backupBannerDismiss").addEventListener("click", hideBackupBanner);
+  document.getElementById("backupBannerDismiss").addEventListener("click", function () {
+    backupBannerDismissed = true;
+    hideBackupBanner();
+  });
 
   document.getElementById("backupRestoreBtn").addEventListener("click", function () {
     document.getElementById("backupFileInput").click();
@@ -766,6 +871,7 @@
         if (data.log) { log = data.log; saveLog(log); }
         if (data.weights) { weights = data.weights; saveWeights(weights); }
         ensureStartDate();
+        ensureDayTypes();
         refreshUIFromState();
         alert("Backup restaurado.");
       } catch (err) {
@@ -777,12 +883,33 @@
   });
 
   function hideBackupBanner() { document.getElementById("backupBanner").style.display = "none"; }
-  function checkBackupReminder() {
-    var last = localStorage.getItem(BACKUP_KEY);
+
+  var backupBannerDismissed = false;   // el usuario tocó "Ahora no" en esta sesión
+
+  // El recordatorio de backup manual solo tiene sentido cuando la nube NO está
+  // cubriendo esa función. Con sesión activa y sincronización sana, el guardado
+  // automático ya es la copia de seguridad, así que no molestamos.
+  // Ojo: sb / sbUser / initialSyncDone / syncHealthy se declaran más abajo (var,
+  // así que están hoisteadas): antes de cloudInit() valen undefined y esto da
+  // false, que es justo lo que queremos (banner como en la versión original).
+  function cloudCoversBackup() {
+    if (!sb || !sbUser) return false;                         // deslogueado: banner normal
+    if (!initialSyncDone && !initialSyncFailed) return true;  // sincronizando: esperamos a saber
+    return syncHealthy && !initialSyncFailed;                 // falla o quedó pendiente: banner normal
+  }
+
+  function updateBackupBanner() {
+    if (backupBannerDismissed) return;
+    var el = document.getElementById("backupBanner");
+    if (cloudCoversBackup()) { el.style.display = "none"; return; }
+    var last = null;
+    try { last = localStorage.getItem(BACKUP_KEY); } catch (e) {}
     if (daysSince(last) >= BACKUP_REMINDER_DAYS) {
       var txt = last ? "Hace más de " + BACKUP_REMINDER_DAYS + " días que no hacés backup." : "Todavía no hiciste ningún backup del tracker.";
       document.getElementById("backupBannerText").textContent = txt;
-      document.getElementById("backupBanner").style.display = "flex";
+      el.style.display = "flex";
+    } else {
+      el.style.display = "none";
     }
   }
 
@@ -906,9 +1033,14 @@
     if (isTrainingDay) {
       var w = WEEKS[weekIdx];
       var uniform = (w.long === w.tempo && w.tempo === w.easy);
+      modalWorkout.className = "modal-workout";
       modalWorkout.textContent = (uniform ? "" : ROLE_MODAL_LABEL[role] + ": ") + w[role];
     } else {
-      modalWorkout.textContent = OFF_DAY_LABELS[weekday] || "Día libre — descanso o movilidad suave.";
+      // Dia que no es de running: el texto y el color salen del tipo elegido
+      // en Ajustes para ese dia de la semana.
+      var dayType = dayTypeFor(weekday);
+      modalWorkout.className = "modal-workout dt-text-" + dayType;
+      modalWorkout.textContent = DAY_TYPE_MODAL_TEXT[dayType] || DAY_TYPE_MODAL_TEXT.rest;
     }
     var current = log[key] ? log[key].state : null;
     document.querySelectorAll(".modal-btn").forEach(function (btn) {
@@ -1226,9 +1358,7 @@
   // Se usa al arrancar, al restaurar un backup y al bajar datos de la nube.
   function refreshUIFromState() {
     startDateInput.value = config.startDate;
-    document.querySelectorAll(".day-toggle").forEach(function (btn, idx) {
-      btn.classList.toggle("active", config.trainingDays.indexOf(idx) > -1);
-    });
+    renderDayTypes();
     render();
     renderWeight();
     document.getElementById("backupStatus").textContent = fmtBackupStatus();
@@ -1269,6 +1399,7 @@
   var initialSyncFailed = false;  // la primera lectura falló, hay que reintentar
   var pendingPush = false;        // hay cambios locales sin subir
   var pushing = false;            // hay un upsert en vuelo
+  var syncHealthy = false;        // la última operación con la nube salió bien
   var pushTimer = null;
   var retryIndex = 0;
 
@@ -1286,11 +1417,20 @@
   }
 
   // Estado visible de la sincronización, dentro de "Ajustes del plan".
+  // Además es el único lugar por donde pasan todos los cambios de estado de la
+  // nube, así que aprovechamos para recalcular el banner de backup desde acá.
+  // Un "pending" no cambia syncHealthy a propósito: el debounce de 1,5 s de cada
+  // guardado no tiene que hacer parpadear el banner. Lo que lo apaga es un
+  // error real (o quedarse sin sesión).
   function setSyncStatus(kind, text) {
+    if (kind === "ok") syncHealthy = true;
+    else if (kind === "error") syncHealthy = false;
     var el = document.getElementById("syncStatus");
-    if (!el) return;
-    el.innerHTML = '<span class="sync-dot ' + (kind || "") + '"></span>';
-    el.appendChild(document.createTextNode(text));
+    if (el) {
+      el.innerHTML = '<span class="sync-dot ' + (kind || "") + '"></span>';
+      el.appendChild(document.createTextNode(text));
+    }
+    updateBackupBanner();
   }
   function updateSyncUI() {
     var row = document.getElementById("syncRow");
@@ -1396,6 +1536,7 @@
     }
     applyingRemote = false;
     ensureStartDate();     // si la fila remota no traía fecha de inicio
+    ensureDayTypes();      // si la fila remota viene de la versión vieja
     refreshUIFromState();
   }
 
@@ -1425,9 +1566,13 @@
           var localAt = Date.parse(bootLocalUpdatedAt || "") || 0;
 
           if (remoteAt > localAt) {
-            // La nube tiene lo más nuevo: pisa localStorage.
-            applyRemoteState(row);
+            // La nube tiene lo más nuevo: pisa localStorage. Lo que este
+            // arranque hubiera escrito queda descartado ANTES de aplicar, no
+            // después: si al aplicar hace falta migrar (por ejemplo una fila
+            // remota vieja, sin dayTypes), esa migración marca su propio
+            // pendiente y tiene que llegar a subirse.
             pendingPush = false;
+            applyRemoteState(row);
             setSyncStatus("ok", "Datos actualizados desde la nube.");
           } else {
             // Este dispositivo tiene lo más nuevo (o no hay con qué comparar).
@@ -1459,6 +1604,7 @@
 
     if (!user) {
       initialSyncDone = false;
+      syncHealthy = false;
       updateSyncUI();
       setSyncStatus("", "Sin sesión: los datos quedan solo en este dispositivo.");
       var localOnly = null;
@@ -1522,17 +1668,26 @@
 
   // --- Arranque de la nube --------------------------------------------------
 
+  // ¿Hay chance de que esta carga termine con sesión en la nube? Se usa al
+  // arrancar para no mostrar el banner de backup antes de saberlo.
+  function cloudConfigured() {
+    var cfg = window.SUPABASE_CONFIG || {};
+    return !!(cfg.url && cfg.anonKey && window.supabase && window.supabase.createClient);
+  }
+
   function cloudInit() {
     var cfg = window.SUPABASE_CONFIG || {};
     if (!cfg.url || !cfg.anonKey) {
       // Sin credenciales: modo local puro, idéntico a la versión original.
       updateSyncUI();
+      updateBackupBanner();
       return;
     }
     if (!window.supabase || !window.supabase.createClient) {
       // La librería del CDN no cargó (offline, bloqueada, etc.).
       if (window.console) console.warn("[sync] no cargó supabase-js; la app sigue en modo local.");
       updateSyncUI();
+      updateBackupBanner();
       return;
     }
     try {
@@ -1543,6 +1698,7 @@
       sb = null;
       if (window.console) console.warn("[sync] no se pudo crear el cliente de Supabase:", e && e.message);
       updateSyncUI();
+      updateBackupBanner();
       return;
     }
 
@@ -1583,7 +1739,9 @@
   }
 
   refreshUIFromState();
-  checkBackupReminder();
+  // Con la nube configurada, el primer chequeo del banner lo dispara cloudInit()
+  // cuando ya sabemos si hay sesión; así no aparece y desaparece en la cara.
+  if (!cloudConfigured()) updateBackupBanner();
   cloudInit();
 })();
 </script>
